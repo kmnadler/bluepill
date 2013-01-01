@@ -39,7 +39,9 @@ module Bluepill
       ps_axu.each_pair do |pid, chunks|
         child_pids << chunks[IDX_MAP[:pid]].to_i if chunks[IDX_MAP[:ppid]].to_i == parent_pid.to_i
       end
-      child_pids
+      # Recursively find all descendants
+      grand_children = child_pids.map{|pid| get_children(pid)}.flatten
+      child_pids.concat grand_children
     end
 
     # Returns the pid of the child that executes the cmd
