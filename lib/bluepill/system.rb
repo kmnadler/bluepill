@@ -264,6 +264,10 @@ module Bluepill
         header_rows = 6
       end
 
+      # Top is affected by the terminal size when called from ruby
+      # without this, we would only get a subset of the results
+      ENV.delete 'LINES'
+
       lines = `#{top_command}`.split("\n")
       lines = lines[header_rows..-1] # Ignore top's system header
       lines = lines.map(&:strip).map(&:squeeze)
