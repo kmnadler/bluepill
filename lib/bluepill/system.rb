@@ -9,14 +9,6 @@ module Bluepill
     APPEND_MODE = "a"
     extend self
 
-    # The position of each field in ps output
-    IDX_MAP = {
-      :pid => 0,
-      :ppid => 1,
-      :pcpu => 2,
-      :rss => 3
-    }
-
     def pid_alive?(pid)
       begin
         ::Process.kill(0, pid)
@@ -27,17 +19,17 @@ module Bluepill
     end
 
     def cpu_usage(pid)
-      ps_axu[pid] && ps_axu[pid][IDX_MAP[:pcpu]].to_f
+      stats[pid] && stats[pid]['%CPU'].to_f
     end
 
     def memory_usage(pid)
-      ps_axu[pid] && ps_axu[pid][IDX_MAP[:rss]].to_f
+      stats[pid] && stats[pid]['RSS'].to_f
     end
 
     def get_children(parent_pid)
       child_pids = Array.new
-      ps_axu.each_pair do |pid, chunks|
-        child_pids << chunks[IDX_MAP[:pid]].to_i if chunks[IDX_MAP[:ppid]].to_i == parent_pid.to_i
+      stats.each_pair do |pid, chunks|
+        child_pids << chunks['PID'].to_i if chunks['PPID'].to_i == parent_pid.to_i
       end
       # Recursively find all descendants
       grand_children = child_pids.map{|pid| get_children(pid)}.flatten
@@ -176,19 +168,30 @@ module Bluepill
       store.clear unless store.empty?
     end
 
-    def ps_axu
-      # TODO: need a mutex here
-      store[:ps_axu] ||= begin
-        # BSD style ps invocation
-        lines = `ps axo pid,ppid,pcpu,rss`.split("\n")
-
-        lines.inject(Hash.new) do |mem, line|
-          chunks = line.split(/\s+/)
-          chunks.delete_if {|c| c.strip.empty? }
-          pid = chunks[IDX_MAP[:pid]].strip.to_i
-          mem[pid] = chunks
-          mem
+    def uname
+      store[:uname] ||= begin
+        uname = `uname`.strip
+        case uname
+        when 'Darwin'
+          :darwin
+        when 'Linux'
+          :linux
+        else
+          :unknown
         end
+      end
+    end
+
+    def stats
+      store[:stats] ||= begin
+        _top = top
+        ps = ps_axu
+        ps.each do |pid, stats|
+          if _top.include? pid
+            ps[pid].merge(_top[pid])
+          end
+        end
+        ps
       end
     end
 
@@ -236,5 +239,45 @@ module Bluepill
         $stderr.reopen(io_err, APPEND_MODE) if io_err
       end
     end
+
+    private
+
+    def map_by_headers(lines)
+      header = lines.shift.split
+      lines = lines.map do |line|
+        line = line.split
+        # top sometimes appends a hyphen to PIDs
+        line = line.map {|chuck| chuck.chomp('-')}
+        header.zip(line).inject({}) {|mem, res| mem[res[0]] = res[1]; mem }
+      end
+      # Running top multiple times means we'll parse the header section
+      lines.reject {|line| line['PID'].to_i == 0 }
+    end
+
+    def top
+      if uname == :darwin
+        top_command = "top -l 2 -stats pid,cpu"
+        header_rows = 11
+      else
+        # Just assume that linux-style top will work
+        top_command = "top -bn2"
+        header_rows = 6
+      end
+
+      lines = `#{top_command}`.split("\n")
+      lines = lines[header_rows..-1] # Ignore top's system header
+      lines = lines.map(&:strip).map(&:squeeze)
+      lines = map_by_headers(lines)
+      lines.inject({}) {|mem, res| mem[res['PID']] = res; mem }
+    end
+
+    def ps_axu
+      # TODO: need a mutex here
+      # BSD style ps invocation
+      lines = `ps axo pid,ppid,pcpu,rss`.split("\n")
+      lines = map_by_headers(lines)
+      lines = lines.inject({}) {|mem, res| mem[res['PID']] = res; mem}
+    end
+
   end
 end
